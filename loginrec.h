@@ -102,8 +102,8 @@ int login_init_entry(struct logininfo *li, pid_t pid, const char *username,
 void login_set_current_time(struct logininfo *li);
 
 /* record the entry */
-int login_login (struct logininfo *li);
-int login_logout(struct logininfo *li);
+void login_login (struct logininfo *li);
+void login_logout(struct logininfo *li);
 #ifdef LOGIN_NEEDS_UTMPX
 int login_utmp_only(struct logininfo *li);
 #endif
@@ -111,8 +111,7 @@ int login_utmp_only(struct logininfo *li);
 /** End of public functions */
 
 /* record the entry */
-int login_write (struct logininfo *li);
-int login_log_entry(struct logininfo *li);
+void login_write (struct logininfo *li);
 
 /* set the network address based on network address type */
 void login_set_addr(struct logininfo *li, const struct sockaddr *sa,
