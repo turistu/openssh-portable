@@ -1,4 +1,4 @@
-/* $OpenBSD: misc.c,v 1.220 2026/09/16 06:23:15 djm Exp $ */
+/* $OpenBSD: misc.c,v 1.221 2026/09/16 17:31:27 dtucker Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  * Copyright (c) 2005-2020 Damien Miller.  All rights reserved.
@@ -3092,7 +3092,7 @@ ptimeout_deadline_sec_double(struct timespec *pt, double sec)
 	struct timespec t;
 
 	memset(&t, 0, sizeof(t));
-	if ((int64_t)sec > SSH_TIME_T_MAX)
+	if ((int64_t)sec >= SSH_TIME_T_MAX)
 		t.tv_sec = SSH_TIME_T_MAX;
 	else if (sec > 0) {
 		t.tv_sec = sec;
@@ -3268,6 +3268,7 @@ get_homedir(void)
 int
 mkdir_path(const char *target, mode_t mode)
 {
+#if defined(HAVE_OPENAT) && defined(O_DIRECTORY)
 	char *dir, *odir = NULL, *next;
 	int fd = AT_FDCWD, fd2, subpath_len, ret = -1;
 
@@ -3311,4 +3312,39 @@ mkdir_path(const char *target, mode_t mode)
 	if (fd != AT_FDCWD)
 		close(fd);
 	return ret;
+#else
+	/*
+	 * If we don't have openat (which was added in POSIX.1-2008), fall back
+	 * to the possibly racy way.
+	 */
+	char *dir, *odir, *p, path[PATH_MAX] = "";
+	int ret = -1;
+	size_t plen = sizeof(path);
+
+	dir = odir = xstrdup(target);
+
+	/* If the dir is relative, start with cwd. */
+	if (*dir != '/' && getcwd(path, plen) == NULL) {
+		error_f("getcwd: %s", strerror(errno));
+		goto out;
+	}
+
+	/* Work through the path, component-wise */
+	while ((p = strsep(&dir, "/")) && p != '\0') {
+		if (strlcat(path, "/", plen) >= plen ||
+		    strlcat(path, p, plen) >= plen)
+			goto out;
+		if (mkdir(path, mode) == 0)
+			debug_f("created directory %s", path);
+		else if (errno != EEXIST && errno != EISDIR) {
+			error_f("mkdir(\"%s\"): %s", path, strerror(errno));
+			goto out;
+		}
+	}
+	/* success */
+	ret = 0;
+ out:
+	free(odir);
+	return ret;
+#endif
 }
