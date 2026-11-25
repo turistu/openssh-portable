@@ -219,6 +219,8 @@ static int
 pthread_cancel(sp_pthread_t thread)
 {
 	ssh_signal(SIGCHLD, sshpam_oldsig);
+	if (sshpam_thread_status != -1)
+		return 0;
 	return (kill(thread, SIGTERM));
 }
 
@@ -1071,6 +1073,11 @@ do_pam_account(void)
 
 	expose_authinfo(__func__);
 
+	sshpam_err = pam_set_item(sshpam_handle, PAM_CONV,
+	    (const void *)&store_conv);
+	if (sshpam_err != PAM_SUCCESS)
+		fatal_f("failed to set PAM_CONV: %s",
+		    pam_strerror(sshpam_handle, sshpam_err));
 	sshpam_err = pam_acct_mgmt(sshpam_handle, 0);
 	debug3("PAM: %s pam_acct_mgmt = %d (%s)", __func__, sshpam_err,
 	    pam_strerror(sshpam_handle, sshpam_err));
