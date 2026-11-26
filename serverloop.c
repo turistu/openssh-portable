@@ -1,4 +1,4 @@
-/* $OpenBSD: serverloop.c,v 1.251 2026/11/25 08:26:59 djm Exp $ */
+/* $OpenBSD: serverloop.c,v 1.254 2026/11/26 03:44:28 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland

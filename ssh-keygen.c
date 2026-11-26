@@ -1,4 +1,4 @@
-/* $OpenBSD: ssh-keygen.c,v 1.502 2026/11/25 08:48:52 djm Exp $ */
+/* $OpenBSD: ssh-keygen.c,v 1.506 2026/11/26 21:43:27 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1994 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -943,9 +943,9 @@ do_fingerprint(struct passwd *pw)
 {
 	FILE *f;
 	struct sshkey *public = NULL;
-	char *comment = NULL, *cp, *ep, *line = NULL;
+	char *comment = NULL, *cp, *line = NULL;
 	size_t linesize = 0;
-	int i, invalid = 1;
+	int invalid = 1;
 	const char *path;
 	u_long lnum = 0;
 
@@ -961,8 +961,11 @@ do_fingerprint(struct passwd *pw)
 
 	while (getline(&line, &linesize, f) != -1) {
 		lnum++;
-		cp = line;
-		cp[strcspn(cp, "\r\n")] = '\0';
+		/*
+		 * Only trim the end of the line; the programs that consume
+		 * these files don't stop at an embedded CR, so neither may we.
+		 */
+		rtrim(line);
 		/* Trim leading space and comments */
 		cp = line + strspn(line, " \t");
 		if (*cp == '#' || *cp == '\0')
@@ -992,31 +995,26 @@ do_fingerprint(struct passwd *pw)
 		/*
 		 * If it's not a private key, then this must be prepared to
 		 * accept a public key prefixed with a hostname or options.
-		 * Try a bare key first, otherwise skip the leading stuff.
+		 * Try a bare key first, otherwise skip the leading stuff
+		 * the same way that ssh(1) and sshd(8) do.
 		 */
 		comment = NULL;
 		if ((public = try_read_key(&cp)) == NULL) {
-			i = strtol(cp, &ep, 10);
-			if (i == 0 || ep == NULL ||
-			    (*ep != ' ' && *ep != '\t')) {
-				int quoted = 0;
-
-				comment = cp;
-				for (; *cp && (quoted || (*cp != ' ' &&
-				    *cp != '\t')); cp++) {
-					if (*cp == '\\' && cp[1] == '"')
-						cp++;	/* Skip both */
-					else if (*cp == '"')
-						quoted = !quoted;
-				}
-				if (!*cp)
-					continue;
+			comment = cp;
+			if (*cp == '@') {
+				/* known_hosts marker; hostnames follow */
+				cp += strcspn(cp, " \t");
+				skip_space(&cp);
+				cp += strcspn(cp, " \t");
+			} else
+				(void)sshkey_advance_past_options(&cp);
+			if (*cp != '\0')
 				*cp++ = '\0';
-			}
+			skip_space(&cp);
 		}
 		/* Retry after parsing leading hostname/key options */
 		if (public == NULL && (public = try_read_key(&cp)) == NULL) {
-			debug("%s:%lu: not a public key", path, lnum);
+			logit("%s:%lu: not a public key", path, lnum);
 			continue;
 		}
 
@@ -1295,7 +1293,7 @@ do_known_hosts(struct passwd *pw, const char *name, int find_host,
     int delete_host, int hash_hosts)
 {
 	char *cp, tmp[PATH_MAX], old[PATH_MAX];
-	int r, fd, infd, oerrno, inplace;
+	int r, fd = -1, infd, oerrno, inplace;
 	struct known_hosts_ctx ctx;
 	u_int foreach_options;
 	struct stat sb;
@@ -1371,7 +1369,7 @@ do_known_hosts(struct passwd *pw, const char *name, int find_host,
 		 * Keep the copy private unless it is about to replace the
 		 * original, in which case it inherits the original's mode.
 		 */
-		if (!ctx.invalid && (!delete_host || ctx.found_key))
+		if (!ctx.invalid && (!delete_host || ctx.found_key) && fd != -1)
 			(void)fchmod(fd, sb.st_mode & 0644);
 		if (ferror(ctx.out) || fclose(ctx.out) != 0) {
 			oerrno = errno;
@@ -2120,10 +2118,26 @@ add_cert_option(char *opt)
 		fatal("Unsupported certificate option \"%s\"", opt);
 }
 
+/*
+ * Prepare a string taken from a certificate or key file for display.
+ * Escapes control characters, including newlines, so they can't mess up
+ * the output. Caller must free the result.
+ */
+static char *
+escape_string(const char *s)
+{
+	char *ret;
+	int width = INT_MAX;
+
+	if (asmprintf(&ret, INT_MAX, &width, "%s", s) == -1)
+		fatal_f("asmprintf failed");
+	return ret;
+}
+
 static void
 show_options(struct sshbuf *optbuf, int in_critical)
 {
-	char *name, *arg, *hex;
+	char *name, *arg, *hex, *esc;
 	struct sshbuf *options, *option = NULL;
 	int r;
 
@@ -2135,7 +2149,9 @@ show_options(struct sshbuf *optbuf, int in_critical)
 		if ((r = sshbuf_get_cstring(options, &name, NULL)) != 0 ||
 		    (r = sshbuf_froms(options, &option)) != 0)
 			fatal_fr(r, "parse option");
-		printf("                %s", name);
+		esc = escape_string(name);
+		printf("                %s", esc);
+		free(esc);
 		if (!in_critical &&
 		    (strcmp(name, "permit-X11-forwarding") == 0 ||
 		    strcmp(name, "permit-agent-forwarding") == 0 ||
@@ -2149,7 +2165,9 @@ show_options(struct sshbuf *optbuf, int in_critical)
 		    strcmp(name, "source-address") == 0)) {
 			if ((r = sshbuf_get_cstring(option, &arg, NULL)) != 0)
 				fatal_fr(r, "parse critical");
-			printf(" %s\n", arg);
+			esc = escape_string(arg);
+			printf(" %s\n", esc);
+			free(esc);
 			free(arg);
 		} else if (in_critical &&
 		    strcmp(name, "verify-required") == 0) {
@@ -2173,7 +2191,7 @@ show_options(struct sshbuf *optbuf, int in_critical)
 static void
 print_cert(struct sshkey *key)
 {
-	char valid[64], *key_fp, *ca_fp;
+	char valid[64], *key_fp, *ca_fp, *esc;
 	u_int i;
 
 	key_fp = sshkey_fingerprint(key, fingerprint_hash, SSH_FP_DEFAULT);
@@ -2189,16 +2207,20 @@ print_cert(struct sshkey *key)
 	printf("        Signing CA: %s %s (using %s)\n",
 	    sshkey_type(key->cert->signature_key), ca_fp,
 	    key->cert->signature_type);
-	printf("        Key ID: \"%s\"\n", key->cert->key_id);
+	esc = escape_string(key->cert->key_id);
+	printf("        Key ID: \"%s\"\n", esc);
+	free(esc);
 	printf("        Serial: %llu\n", (unsigned long long)key->cert->serial);
 	printf("        Valid: %s\n", valid);
 	printf("        Principals: ");
 	if (key->cert->nprincipals == 0)
 		printf("(none)\n");
 	else {
-		for (i = 0; i < key->cert->nprincipals; i++)
-			printf("\n                %s",
-			    key->cert->principals[i]);
+		for (i = 0; i < key->cert->nprincipals; i++) {
+			esc = escape_string(key->cert->principals[i]);
+			printf("\n                %s", esc);
+			free(esc);
+		}
 		printf("\n");
 	}
 	printf("        Critical Options: ");
@@ -2356,13 +2378,18 @@ update_krl_from_file(struct passwd *pw, const char *file, int wild_ca,
 		lnum++;
 		was_explicit_key = was_sha1 = was_sha256 = was_hash = 0;
 		cp = line + strspn(line, " \t");
-		/* Trim trailing space, comments and strip \n */
+		/*
+		 * Trim trailing space, comments and strip \n. A '#' starts a
+		 * comment only at the start of the line or after whitespace,
+		 * since key IDs may legitimately contain this character.
+		 */
 		for (i = 0, r = -1; cp[i] != '\0'; i++) {
-			if (cp[i] == '#' || cp[i] == '\n') {
+			if (cp[i] == '\n' ||
+			    (cp[i] == '#' && (i == 0 || r != -1))) {
 				cp[i] = '\0';
 				break;
 			}
-			if (cp[i] == ' ' || cp[i] == '\t') {
+			if (cp[i] == ' ' || cp[i] == '\t' || cp[i] == '\r') {
 				/* Remember the start of a span of whitespace */
 				if (r == -1)
 					r = i;
@@ -2544,11 +2571,14 @@ check_krl_key(struct ssh_krl *krl, const struct sshkey *k,
     const char *path, const char *comment)
 {
 	int r;
+	char *esc;
 
 	r = ssh_krl_check_key(krl, k);
+	esc = escape_string(comment);
 	printf("%s%s%s%s: %s\n", path,
-	    *comment ? " (" : "", comment, *comment ? ")" : "",
+	    *esc ? " (" : "", esc, *esc ? ")" : "",
 	    r == 0 ? "ok" : "REVOKED");
+	free(esc);
 	return r != 0;
 }
 
