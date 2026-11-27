@@ -1,4 +1,4 @@
-/* $OpenBSD: clientloop.c,v 1.430 2026/11/25 08:26:59 djm Exp $ */
+/* $OpenBSD: clientloop.c,v 1.432 2026/11/27 19:55:40 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -354,9 +354,14 @@ client_x11_get_proto(struct ssh *ssh, const char *display,
 			}
 
 			if (timeout == 0) {
-				/* auth doesn't time out */
+				/*
+				 * auth doesn't time out. This must be requested
+				 * explicitly: without a "timeout" argument,
+				 * xauth(1) asks for a cookie that the X server
+				 * purges after 60s of disuse.
+				 */
 				xasprintf(&cmd, "%s -f %s generate %s %s "
-				    "untrusted 2>%s",
+				    "untrusted timeout 0 2>%s",
 				    xauth_path, xauthfile, display,
 				    SSH_X11_PROTO, _PATH_DEVNULL);
 			} else {
@@ -815,13 +820,18 @@ client_process_net_input(struct ssh *ssh)
 	if (r == SSH_ERR_SYSTEM_ERROR) {
 		if (errno == EAGAIN || errno == EINTR || errno == EWOULDBLOCK)
 			return;
-		if (errno == EPIPE) {
-			quit_message("Connection to %s closed by remote host.",
-			    host);
-			return;
-		}
 	}
-	quit_message("Read from remote host %s: %s", host, ssh_err(r));
+	if (r == SSH_ERR_SYSTEM_ERROR && errno == EPIPE)
+		quit_message("Connection to %s closed by remote host.", host);
+	else
+		quit_message("Read from remote host %s: %s", host, ssh_err(r));
+	/*
+	 * The server may send the exit-status ahead of the remainder of the
+	 * session's output, so don't report it if the connection was lost
+	 * before the session completed.
+	 */
+	if (!session_closed || !channel_output_closed(ssh, session_ident))
+		exit_status = -1;
 }
 
 static void
